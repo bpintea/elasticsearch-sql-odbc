@@ -876,13 +876,6 @@ SQLRETURN EsSQLGetDiagFieldW(
 	wstr_st *wstrp, wstr;
 	SQLRETURN ret;
 
-	if (RecNumber <= 0) {
-		ERRH(Handle, "record number must be >=1; received: %d.", RecNumber);
-		return SQL_ERROR;
-	} else if (1 < RecNumber) {
-		return SQL_NO_DATA;
-	}
-
 	if (! Handle) {
 		ERR("null handle provided.");
 		return SQL_INVALID_HANDLE;
@@ -891,7 +884,6 @@ SQLRETURN EsSQLGetDiagFieldW(
 	/* GetDiagField can't set diagnostics itself, so use a dummy */
 	*HDRH(&dummy) = *HDRH(Handle); /* need a valid hhdr struct */
 
-	/*INDENT-OFF*/
 	switch (DiagIdentifier) {
 		/* Header Fields */
 		case SQL_DIAG_NUMBER:
@@ -902,24 +894,38 @@ SQLRETURN EsSQLGetDiagFieldW(
 			*(SQLINTEGER *)DiagInfoPtr =
 				(diag->state != SQL_STATE_00000) ? 1 : 0;
 			DBGH(Handle, "available diagnostics count: %ld.",
-					*(SQLINTEGER *)DiagInfoPtr);
+				*(SQLINTEGER *)DiagInfoPtr);
 			return SQL_SUCCESS;
 
 		case SQL_DIAG_CURSOR_ROW_COUNT:
-		case SQL_DIAG_DYNAMIC_FUNCTION:
-		case SQL_DIAG_DYNAMIC_FUNCTION_CODE:
-		case SQL_DIAG_ROW_COUNT:
 			/* should be handled by DM */
 			if (HandleType != SQL_HANDLE_STMT) {
 				ERRH(Handle, "DiagIdentifier %d called with non-statement "
-						"handle type %d.", DiagIdentifier, HandleType);
+					"handle type %d.", DiagIdentifier, HandleType);
 				return SQL_ERROR;
 			}
+			return EsSQLRowCount(Handle, DiagInfoPtr);
+
+		case SQL_DIAG_DYNAMIC_FUNCTION:
+		case SQL_DIAG_DYNAMIC_FUNCTION_CODE:
+		case SQL_DIAG_ROW_COUNT:
 			ERRH(Handle, "DiagIdentifier %hd is not supported.");
 			return SQL_ERROR;
 
-		/* case SQL_DIAG_RETURNCODE: break; -- DM only */
+			/* case SQL_DIAG_RETURNCODE: break; -- DM only */
+	}
 
+	/* "If the DiagIdentifier argument indicates any field of the diagnostics
+	 * header, RecNumber is ignored. If not, it should be more than 0." */
+	if (RecNumber <= 0) {
+		ERRH(Handle, "record number must be >=1; received: %d.", RecNumber);
+		return SQL_ERROR;
+	} else if (1 < RecNumber) {
+		return SQL_NO_DATA;
+	}
+
+	/*INDENT-OFF*/
+	switch (DiagIdentifier) {
 		/* Record Fields */
 		do {
 		case SQL_DIAG_CLASS_ORIGIN:
