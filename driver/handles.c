@@ -864,7 +864,7 @@ SQLRETURN EsSQLSetStmtAttrW(
 
 		case SQL_ATTR_MAX_ROWS:
 			DBGH(stmt, "setting max rows: %llu.", (SQLULEN)ValuePtr);
-			if ((SQLULEN)ValuePtr != 0) {
+			if ((SQLULEN)ValuePtr != 0) { /* TODO: -> fetch_size@stmt */
 				WARNH(stmt, "requested max_rows substituted with 0.");
 				RET_HDIAGS(stmt, SQL_STATE_01S02);
 			}
@@ -990,17 +990,17 @@ SQLRETURN EsSQLGetStmtAttrW(
 			return ret;
 
 		case SQL_ATTR_USE_BOOKMARKS:
-			DBGH(stmt, "getting use-bookmarks: %llu.", SQL_UB_OFF);
+			DBGH(stmt, "getting use-bookmarks: %lu.", SQL_UB_OFF);
 			*(SQLULEN *)ValuePtr = SQL_UB_OFF;
 			break;
 
 		case SQL_ATTR_NOSCAN:
-			DBGH(stmt, "getting noscan: %llu.", SQL_NOSCAN_OFF);
+			DBGH(stmt, "getting noscan: %lu.", SQL_NOSCAN_OFF);
 			*(SQLULEN *)ValuePtr = SQL_NOSCAN_OFF;
 			break;
 
 		case SQL_ATTR_CONCURRENCY:
-			DBGH(stmt, "getting concurrency: %llu.", SQL_CONCUR_READ_ONLY);
+			DBGH(stmt, "getting concurrency: %d.", SQL_CONCUR_READ_ONLY);
 			*(SQLULEN *)ValuePtr = SQL_CONCUR_READ_ONLY;
 			break;
 
@@ -1010,17 +1010,17 @@ SQLRETURN EsSQLGetStmtAttrW(
 			break;
 
 		case SQL_ATTR_CURSOR_SENSITIVITY:
-			DBGH(stmt, "getting cursor sensitivity: %llu.", SQL_UNSPECIFIED);
+			DBGH(stmt, "getting cursor sensitivity: %d.", SQL_UNSPECIFIED);
 			*(SQLULEN *)ValuePtr = SQL_UNSPECIFIED;
 			break;
 
 		case SQL_ATTR_CURSOR_SCROLLABLE:
-			DBGH(stmt, "getting scrollable cursor: %llu.", SQL_NONSCROLLABLE);
+			DBGH(stmt, "getting scrollable cursor: %d.", SQL_NONSCROLLABLE);
 			*(SQLULEN *)ValuePtr = SQL_NONSCROLLABLE;
 			break;
 
 		case SQL_ATTR_RETRIEVE_DATA:
-			DBGH(stmt, "getting data retrieving: %llu.", SQL_RD_ON);
+			DBGH(stmt, "getting data retrieving: %lu.", SQL_RD_ON);
 			*(SQLULEN *)ValuePtr = SQL_RD_ON;
 			break;
 

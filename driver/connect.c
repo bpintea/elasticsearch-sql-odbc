@@ -3376,8 +3376,8 @@ SQLRETURN EsSQLGetConnectAttrW(
 
 		case SQL_ATTR_TXN_ISOLATION:
 			DBGH(dbc, "requested: transaction isolation (0).");
-			ERRH(dbc, "no support for transactions available.");
-			*(SQLUINTEGER *)ValuePtr = 0;
+			WARNH(dbc, "no support for transactions available.");
+			*(SQLUINTEGER *)ValuePtr = 0LU; /* bit mask */
 			break;
 
 		case SQL_ATTR_ACCESS_MODE:
