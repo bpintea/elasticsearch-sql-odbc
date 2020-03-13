@@ -370,10 +370,11 @@ SQLRETURN EsSQLTablesW(
 			goto end;
 		}
 
-		/* TODO: server support needed for sch. name filtering */
+		/* server support needed for sch. name filtering */
 		if (wszmemcmp(esrc.str, MK_WPTR(SQL_ALL_SCHEMAS), (long)esrc.cnt)) {
-			ERRH(stmt, "filtering by schemas is not supported.");
-			SET_HDIAG(stmt, SQL_STATE_IM001, "schema filtering not supported",
+			ERRH(stmt, "filtering by schema (`" LWPDL "`) is not supported.",
+				LWSTR(&esrc));
+			SET_HDIAG(stmt, SQL_STATE_HYC00, "schema filtering not supported",
 				0);
 			goto end;
 		}
