@@ -26,6 +26,7 @@
 #include "../lib/curl_base64.h"
 #endif /*! CURL_STATICLIB*/
 
+#define SCHEME_HTTPS			"https://"
 /* HTTP headers default for every request */
 #define HTTP_APP_CBOR			"application/cbor"
 #define HTTP_APP_JSON			"application/json"
@@ -102,6 +103,12 @@
  * constituent: major, minor, revision) */
 #define VER_LEVEL_MULTI		100L
 
+/* https://curl.se/libcurl/c/CURLOPT_SSL_VERIFYPEER.html */
+#define CURLOPT_SSL_VERIFYPEER_ON	1L
+#define CURLOPT_SSL_VERIFYPEER_OFF	0L
+/* https://curl.se/libcurl/c/CURLOPT_SSL_VERIFYHOST.html */
+#define CURLOPT_SSL_VERIFYHOST_ON	2L
+#define CURLOPT_SSL_VERIFYHOST_OFF	0L
 
 /* structure for one row returned by the ES.
  * This is a mirror of elasticsearch_type, with length-or-indicator fields
@@ -160,11 +167,56 @@ volatile unsigned filelog_cnt = 0;
 
 static BOOL load_es_types(esodbc_dbc_st *dbc);
 
+static BOOL curl_ssl_backend_init()
+{
+	wchar_t buff[sizeof("false")];
+	wstr_st use_ossl = (wstr_st) {
+		buff, sizeof(buff)/sizeof(*buff)
+	};
+	DWORD cnt;
+	curl_sslbackend ssl_be = CURLSSLBACKEND_SCHANNEL;
+
+	cnt = GetEnvironmentVariable(MK_WPTR(ESODBC_USE_OSSL_ENV_VAR),
+			use_ossl.str, (DWORD)use_ossl.cnt);
+	if (! cnt) { /* 0 means error */
+		/* env var wasn't defined OR error occured. */
+		if (GetLastError() != ERROR_ENVVAR_NOT_FOUND) {
+			ERRN("failed to read `" ESODBC_USE_OSSL_ENV_VAR "` environment "
+				"variable.");
+			return FALSE;
+		}
+		DBG("environment variable `" ESODBC_USE_OSSL_ENV_VAR "` not defined.");
+	} else if (use_ossl.cnt <= cnt) {
+		WARN("content of `" ESODBC_USE_OSSL_ENV_VAR "` enviroment variable"
+			" ignored due to length (%u > ['false']).", cnt);
+	} else {
+		use_ossl.cnt = cnt;
+		DBG(ESODBC_USE_OSSL_ENV_VAR " set to `" LTPDL "`.", LWSTR(&use_ossl));
+		if (wstr2bool(&use_ossl)) {
+			ssl_be = CURLSSLBACKEND_OPENSSL;
+			INFO("using OpenSSL as the SSL backend.");
+		} else {
+			INFO("use of OpenSSL as the SSL backend is disabled.");
+		}
+
+	}
+	if (curl_global_sslset(ssl_be, NULL, NULL) != CURLSSLSET_OK) {
+		ERR("libcurl: failed to set OpenSSL backend");
+		return FALSE;
+	}
+
+	return TRUE;
+}
+
 BOOL connect_init()
 {
 	CURLcode code;
 
 	DBG("libcurl: global init.");
+
+	if (! curl_ssl_backend_init()) {
+		return FALSE;
+	}
 
 	/* "this will init the winsock stuff" */
 	code = curl_global_init(CURL_GLOBAL_ALL);
@@ -439,6 +491,39 @@ err:
 	return SQL_ERROR;
 }
 
+/* https://github.com/jeroen/curl/issues/186 :
+ * "Schannel backend doesn't support HTTPS proxy */
+static SQLRETURN check_https_proxy_schannel(esodbc_dbc_st *dbc)
+{
+	struct curl_tlssessioninfo *session = NULL;
+
+	if (dbc->proxy_url.cnt <= sizeof(SCHEME_HTTPS)) {
+		/* broken URL, but it needs to fail later for the right err message */
+		return SQL_SUCCESS;
+	}
+	if (strncasecmp(dbc->proxy_url.str, SCHEME_HTTPS,
+			sizeof(SCHEME_HTTPS) - 1)) {
+		/* not a HTTPS scheme */
+		return SQL_SUCCESS;
+	}
+
+	dbc->curl_err = curl_easy_getinfo(dbc->curl, CURLINFO_TLS_SSL_PTR,
+			&session);
+	if (dbc->curl_err != CURLE_OK) {
+		ERRH(dbc, "libcurl: failed to retrieve SSL session pointer by HTTPS"
+			" scheme.");
+		return dbc_curl_post_diag(dbc, SQL_STATE_HY000);
+	}
+
+	if (session->backend == CURLSSLBACKEND_SCHANNEL) {
+		return post_diagnostic(dbc, SQL_STATE_HYC00, L"HTTPS proxying mode is"
+				" not supported with native SSL backend. Refer to the "
+				"documentation on how to set the " ESODBC_USE_OSSL_ENV_VAR
+				" environment variable to enable this mode.", 0);
+	}
+	return SQL_SUCCESS;
+}
+
 static SQLRETURN dbc_curl_init(esodbc_dbc_st *dbc)
 {
 	CURL *curl;
@@ -492,7 +577,8 @@ static SQLRETURN dbc_curl_init(esodbc_dbc_st *dbc)
 
 	if (dbc->secure) {
 		dbc->curl_err = curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER,
-				ESODBC_SEC_CHECK_CA <= dbc->secure ? 1L : 0L);
+				ESODBC_SEC_CHECK_CA <= dbc->secure ? CURLOPT_SSL_VERIFYPEER_ON
+				: CURLOPT_SSL_VERIFYPEER_OFF);
 		if (dbc->curl_err != CURLE_OK) {
 			ERRH(dbc, "libcurl: failed to enable CA check.");
 			goto err;
@@ -509,15 +595,17 @@ static SQLRETURN dbc_curl_init(esodbc_dbc_st *dbc)
 			}
 			/* verify host name */
 			dbc->curl_err = curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST,
-					ESODBC_SEC_CHECK_HOST <= dbc->secure ? 2L : 0L);
+					ESODBC_SEC_CHECK_HOST <= dbc->secure ?
+					CURLOPT_SSL_VERIFYHOST_ON : CURLOPT_SSL_VERIFYHOST_OFF);
 			if (dbc->curl_err != CURLE_OK) {
 				ERRH(dbc, "libcurl: failed to enable host check.");
 				goto err;
 			}
 			/* verify the revocation chain? */
 			dbc->curl_err = curl_easy_setopt(curl, CURLOPT_SSL_OPTIONS,
-					ESODBC_SEC_CHECK_REVOKE <= dbc->secure ?
-					0L : CURLSSLOPT_NO_REVOKE);
+					CURLSSLOPT_NATIVE_CA | (
+						ESODBC_SEC_CHECK_REVOKE <= dbc->secure ? 0 :
+						CURLSSLOPT_NO_REVOKE));
 			if (dbc->curl_err != CURLE_OK) {
 				ERRH(dbc, "libcurl: failed to enable host check.");
 				goto err;
@@ -583,6 +671,42 @@ static SQLRETURN dbc_curl_init(esodbc_dbc_st *dbc)
 		INFOH(dbc, "no username provided: auth disabled.");
 	}
 
+	/* proxy parameters */
+	if (dbc->proxy_url.cnt) {
+		ret = check_https_proxy_schannel(dbc);
+		if (! SQL_SUCCEEDED(ret)) {
+			goto err_proxy;
+		}
+
+		dbc->curl_err = curl_easy_setopt(curl, CURLOPT_PROXY,
+				dbc->proxy_url.str);
+		if (dbc->curl_err != CURLE_OK) {
+			ERRH(dbc, "libcurl: failed to set the proxy URL.");
+			goto err;
+		}
+		if (dbc->proxy_uid.cnt) {
+			dbc->curl_err = curl_easy_setopt(curl, CURLOPT_PROXYUSERNAME,
+					dbc->proxy_uid.str);
+			if (dbc->curl_err != CURLE_OK) {
+				ERRH(dbc, "libcurl: failed to set the proxy username.");
+				goto err;
+			}
+			if (dbc->proxy_pwd.cnt) {
+				dbc->curl_err = curl_easy_setopt(curl, CURLOPT_PROXYPASSWORD,
+						dbc->proxy_pwd.str);
+				if (dbc->curl_err != CURLE_OK) {
+					ERRH(dbc, "libcurl: failed to set the proxy password.");
+					goto err;
+				}
+			}
+		}
+	} else {
+		dbc->curl_err = curl_easy_setopt(curl, CURLOPT_PROXY, "");
+		if (dbc->curl_err != CURLE_OK) {
+			WARNH(dbc, "libcurl: failed to generally disable proxying.");
+		}
+	}
+
 	/* set the write call-back for answers */
 	dbc->curl_err = curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION,
 			write_callback);
@@ -624,6 +748,7 @@ static SQLRETURN dbc_curl_init(esodbc_dbc_st *dbc)
 
 err:
 	ret = dbc_curl_post_diag(dbc, SQL_STATE_HY000);
+err_proxy:
 	cleanup_curl(dbc);
 	return ret;
 }
@@ -1130,7 +1255,7 @@ SQLRETURN config_dbc(esodbc_dbc_st *dbc, esodbc_dsn_attrs_st *attrs)
 	const static wstr_st http_prefix = WSTR_INIT("http://");
 	const static wstr_st https_prefix = WSTR_INIT("https://");
 	wstr_st prefix;
-	int cnt, ipv6;
+	int cnt, ipv6, n;
 	SQLBIGINT secure, timeout, max_body_size, max_fetch_size, varchar_limit;
 	SQLWCHAR buff_url[ESODBC_MAX_URL_LEN];
 	wstr_st url = (wstr_st) {
@@ -1191,7 +1316,7 @@ SQLRETURN config_dbc(esodbc_dbc_st *dbc, esodbc_dsn_attrs_st *attrs)
 
 	if (secure) {
 		if (! wstr_to_utf8(&attrs->ca_path, &dbc->ca_path)) {
-			ERRNH(dbc, "failed to convert CA path `" LWPDL "` to UTF8.",
+			ERRH(dbc, "failed to convert CA path `" LWPDL "` to UTF8.",
 				LWSTR(&attrs->ca_path));
 			SET_HDIAG(dbc, SQL_STATE_HY000, "reading the CA file path "
 				"failed", 0);
@@ -1222,7 +1347,7 @@ SQLRETURN config_dbc(esodbc_dbc_st *dbc, esodbc_dsn_attrs_st *attrs)
 		url.cnt = (size_t)cnt;
 	}
 	if (! wstr_to_utf8(&url, &dbc->close_url)) {
-		ERRNH(dbc, "failed to convert URL `" LWPDL "` to UTF8.", LWSTR(&url));
+		ERRH(dbc, "failed to convert URL `" LWPDL "` to UTF8.", LWSTR(&url));
 		SET_HDIAG(dbc, SQL_STATE_HY000, "server SQL URL's UTF8 conversion "
 			"failed", 0);
 		goto err;
@@ -1233,7 +1358,7 @@ SQLRETURN config_dbc(esodbc_dbc_st *dbc, esodbc_dsn_attrs_st *attrs)
 	 * dup'ed since libcurl needs the 0 terminator */
 	url.cnt -= sizeof(ELASTIC_SQL_CLOSE_SUBPATH) - /*\0*/1;
 	if (! wstr_to_utf8(&url, &dbc->url)) {
-		ERRNH(dbc, "failed to convert URL `" LWPDL "` to UTF8.", LWSTR(&url));
+		ERRH(dbc, "failed to convert URL `" LWPDL "` to UTF8.", LWSTR(&url));
 		SET_HDIAG(dbc, SQL_STATE_HY000, "server SQL URL's UTF8 conversion "
 			"failed", 0);
 		goto err;
@@ -1258,7 +1383,7 @@ SQLRETURN config_dbc(esodbc_dbc_st *dbc, esodbc_dsn_attrs_st *attrs)
 		url.cnt = (size_t)cnt;
 	}
 	if (! wstr_to_utf8(&url, &dbc->root_url)) {
-		ERRNH(dbc, "failed to convert URL `" LWPDL "` to UTF8.", LWSTR(&url));
+		ERRH(dbc, "failed to convert URL `" LWPDL "` to UTF8.", LWSTR(&url));
 		SET_HDIAG(dbc, SQL_STATE_HY000, "server root URL's UTF8 conversion "
 			"failed", 0);
 		goto err;
@@ -1311,6 +1436,74 @@ SQLRETURN config_dbc(esodbc_dbc_st *dbc, esodbc_dsn_attrs_st *attrs)
 	}
 	dbc->timeout = (SQLUINTEGER)timeout;
 	INFOH(dbc, "timeout: %lu.", dbc->timeout);
+
+	/*
+	 * proxy settings
+	 */
+	if (wstr2bool(&attrs->proxy_enabled)) {
+		ipv6 = wcsnstr(attrs->proxy_host.str, attrs->proxy_host.cnt, L':') !=
+			NULL;
+		cnt = swprintf(url.str, sizeof(buff_url)/sizeof(*buff_url),
+				L"" WPFWP_LDESC "://" WPFCP_DESC WPFWP_LDESC WPFCP_DESC,
+				LWSTR(&attrs->proxy_type),
+				ipv6 ? "[" : "", LWSTR(&attrs->proxy_host), ipv6 ? "]" : "");
+		if (cnt > 0 && attrs->proxy_port.cnt) {
+			n = swprintf(url.str + cnt,
+					sizeof(buff_url)/sizeof(*buff_url) - cnt,
+					L":" WPFWP_LDESC, LWSTR(&attrs->proxy_port));
+		} else {
+			n = 0;
+		}
+		if (cnt <= 0 || n < 0) {
+			ERRNH(dbc, "failed to print proxy URL out of type: `" LWPDL "`, "
+				"host: `" LWPDL "` and port: `" LWPDL "`.",
+				LWSTR(&attrs->proxy_type), LWSTR(&attrs->proxy_host),
+				LWSTR(&attrs->proxy_port));
+			SET_HDIAG(dbc, SQL_STATE_HY000, "printing proxy URL failed", 0);
+			goto err;
+		} else {
+			url.cnt = cnt + n;
+		}
+		if (! wstr_to_utf8(&url, &dbc->proxy_url)) {
+			ERRH(dbc, "failed to convert URL `" LWPDL "` to UTF8.",
+				LWSTR(&url));
+			SET_HDIAG(dbc, SQL_STATE_HY000, "proxy URL's UTF8 conversion "
+				"failed", 0);
+			goto err;
+		}
+		INFOH(dbc, "proxy URL: `%s`.", dbc->proxy_url.str);
+
+		if (wstr2bool(&attrs->proxy_auth_enabled)) {
+			if (attrs->proxy_auth_uid.cnt) {
+				if (! wstr_to_utf8(&attrs->proxy_auth_uid, &dbc->proxy_uid)) {
+					ERRH(dbc, "failed to convert proxy user ID `" LWPDL "` to"
+						" UTF8.", LWSTR(&attrs->proxy_auth_uid));
+					SET_HDIAG(dbc, SQL_STATE_HY000, "proxy UID's UTF8 "
+						"conversion failed", 0);
+					goto err;
+				}
+				INFOH(dbc, "proxy UID: `%s`.", dbc->proxy_uid.str);
+
+				if (attrs->proxy_auth_pwd.cnt) {
+					if (! wstr_to_utf8(&attrs->proxy_auth_pwd,
+							&dbc->proxy_pwd)) {
+						ERRH(dbc, "failed to convert proxy password [%zu] `%s`"
+							" to UTF8", attrs->proxy_auth_pwd.cnt,
+							ESODBC_PWD_VAL_SUBST);
+						SET_HDIAG(dbc, SQL_STATE_HY000, "proxy password's "
+							"UTF8 conversion failed", 0);
+						goto err;
+					}
+					/* indicates the presence of a non-empty password */
+					INFOH(dbc, "proxy PWD: " ESODBC_PWD_VAL_SUBST ".");
+				}
+			}
+		} else {
+			INFOH(dbc, "proxy authentication disabled.");
+		}
+	} else {
+		INFOH(dbc, "proxy disabled.");
+	}
 
 	/*
 	 * set max body size
@@ -1512,6 +1705,21 @@ void cleanup_dbc(esodbc_dbc_st *dbc)
 		dbc->pwd.cnt = 0;
 	} else {
 		assert(dbc->pwd.cnt == 0);
+	}
+	if (dbc->proxy_url.str) {
+		free(dbc->proxy_url.str);
+		dbc->proxy_url.str = NULL;
+		dbc->proxy_url.cnt = 0;
+	}
+	if (dbc->proxy_uid.str) {
+		free(dbc->proxy_uid.str);
+		dbc->proxy_uid.str = NULL;
+		dbc->proxy_uid.cnt = 0;
+	}
+	if (dbc->proxy_pwd.str) {
+		free(dbc->proxy_pwd.str);
+		dbc->proxy_pwd.str = NULL;
+		dbc->proxy_pwd.cnt = 0;
 	}
 	if (dbc->fetch.str) {
 		free(dbc->fetch.str);

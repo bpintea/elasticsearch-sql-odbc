@@ -23,6 +23,8 @@
 #define ESODBC_LOG_DIR_ENV_VAR		"ESODBC_LOG_DIR"
 /* number of consecutive logging failures that will disable logging */
 #define ESODBC_LOG_MAX_RETRY		5
+/* Environment variable name holding the OpenSSL backend switch */
+#define ESODBC_USE_OSSL_ENV_VAR		"ESODBC_USE_OPENSSL"
 
 /* the (POSIX) timezone environment variable */
 #define ESODBC_TZ_ENV_VAR			"TZ"
@@ -126,7 +128,7 @@
 #define ESODBC_MAX_URL_LEN				2048
 /* maximum DNS attribute value length (should be long enought to accomodate a
  * decently long FQ file path name) */
-#define ESODBC_DSN_MAX_ATTR_LEN			1024
+#define ESODBC_DSN_MAX_ATTR_LEN			768
 
 /* SQL plugin's REST endpoint for SQL */
 #define ELASTIC_SQL_PATH				"/_sql"
@@ -167,7 +169,7 @@
 /* default global request timeout (0: no timeout) */
 #define ESODBC_DEF_TIMEOUT			"0"
 /* don't follow redirection from the server  */
-#define ESODBC_DEF_FOLLOW			"yes"
+#define ESODBC_DEF_FOLLOW			"true"
 /* packing of REST bodies (JSON or CBOR) */
 #define ESODBC_DEF_PACKING			ESODBC_DSN_PACK_CBOR
 /* zlib compression of REST bodies (auto/true/false) */
@@ -177,9 +179,9 @@
 /* default tracing level */
 #define ESODBC_DEF_TRACE_LEVEL		"WARN"
 /* default TZ handling */
-#define ESODBC_DEF_APPLY_TZ			"no"
+#define ESODBC_DEF_APPLY_TZ			"false"
 /* default early execution flag */
-#define ESODBC_DEF_EARLY_EXEC		"yes"
+#define ESODBC_DEF_EARLY_EXEC		"true"
 /* default of scientific floats printing */
 #define ESODBC_DEF_SCI_FLOATS		ESODBC_DSN_FLTS_DEF
 #define ESODBC_PWD_VAL_SUBST		"<redacted>"
@@ -187,6 +189,8 @@
 #define ESODBC_DEF_ESC_PVA			"true"
 #define ESODBC_DEF_IDX_INC_FROZEN	"false"
 #define ESODBC_DEF_VARCHAR_LIMIT	"0"
+#define ESODBC_DEF_PROXY_ENABLED	"false"
+#define ESODBC_DEF_PROXY_AUTH_ENA	"false"
 
 /*
  *

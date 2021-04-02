@@ -340,6 +340,12 @@ REM PROPER function: clean up the build and libs dir.
 	if exist %BUILDS_DIR%\x64\zlibclean.vcxproj (
 		MSBuild %BUILDS_DIR%\x64\zlibclean.vcxproj
 	)
+	if exist %BUILDS_DIR%\x86\osslclean.vcxproj (
+		MSBuild %BUILDS_DIR%\x86\osslclean.vcxproj
+	)
+	if exist %BUILDS_DIR%\x64\osslclean.vcxproj (
+		MSBuild %BUILDS_DIR%\x64\osslclean.vcxproj
+	)
 	if exist %BUILDS_DIR%\x86\curlclean.vcxproj (
 		MSBuild %BUILDS_DIR%\x86\curlclean.vcxproj
 	)

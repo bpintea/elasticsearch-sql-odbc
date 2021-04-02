@@ -28,10 +28,12 @@ if (${WIN32})
 		set(TARCH x64) # target arch
 		set(BARCH ) # bits architecture (64 is the default, silent)
 		set(PLAT_ARCH windows-x86_64)
+		set(OSSL_ARCH VC-WIN64A)
 	else (${CMAKE_GENERATOR_PLATFORM} MATCHES [Xx]64)
 		set(TARCH x86)
 		set(BARCH 32)
 		set(PLAT_ARCH windows-x86)
+		set(OSSL_ARCH VC-WIN32)
 	endif (${CMAKE_GENERATOR_PLATFORM} MATCHES [Xx]64)
 	message("Building for Windows, ${TARCH}.")
 else (${WIN32})
@@ -91,7 +93,6 @@ if (${WIN32})
 	# set the Visual Studio warning level to 4
 	#set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} /W4")
 	set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} /W3")
-	# TODO: review@alpha
 	set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} /D_CRT_SECURE_NO_WARNINGS")
 	set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} /D_CRT_NONSTDC_NO_DEPRECATE")
 	# don't complain about non-constant aggregate initializer (C4204)
@@ -208,11 +209,13 @@ if (${LIBCURL_BUILD_TYPE} MATCHES [Dd][Ee][Bb][Uu][Gg])
 	# non-modifiable "-MD". Setting ZLIB_LOC will override it, which will
 	# issue a compiler warning (that can be ignored, can't be supressed).
 	set(ZLIB_LOC -MDd)
+	set(OSSL_BUILD_TYPE --debug)
 else (${LIBCURL_BUILD_TYPE} MATCHES [Dd][Ee][Bb][Uu][Gg])
 	set(LIBCURL_DEBUG_ENABLED no)
 	set(LIBCURL_BUILD_TYPE release)
 	# empty LIBCURL_BUILD_SUFFIX
 	# empty ZLIB_LOC
+	set(OSSL_BUILD_TYPE --release)
 endif (${LIBCURL_BUILD_TYPE} MATCHES [Dd][Ee][Bb][Uu][Gg])
 
 set(LIBCURL_LD_PATH
@@ -221,7 +224,7 @@ set(LIBCURL_LD_PATH
 	# Curl's win build root directory is not configurable.
 	# The path built below is only constant for the subtree tag and the nmake
 	# options below: ZLIB, IPv6, SSPI, WinSSL, plus IDN, not echoed in name.
-	${LIBCURL_PATH_SRC}/builds/libcurl-vc-${TARCH}-${LIBCURL_BUILD_TYPE}-static-zlib-static-ipv6-sspi-winssl-obj-lib/
+	${LIBCURL_PATH_SRC}/builds/libcurl-vc-${TARCH}-${LIBCURL_BUILD_TYPE}-static-ssl-static-zlib-static-ipv6-sspi-schannel-obj-lib/
 	CACHE PATH "Lib curl load library path")
 set(LIBCURL_INC_PATH ${LIBCURL_PATH_SRC}/include CACHE PATH
 	"Lib curl include path")
@@ -231,8 +234,13 @@ set(ZLIB_PATH_SRC ${CMAKE_SOURCE_DIR}/libs/zlib CACHE PATH
 	"Lib zlib source path")
 set(ZLIB_PATH_INST ${LIBCURL_PATH_SRC}/builds/zlib-${TARCH} CACHE PATH
 	"Lib zlib install path")
+# openssl paths
+set(OSSL_PATH_SRC ${CMAKE_SOURCE_DIR}/libs/openssl CACHE PATH
+	"OpenSSL source path")
+set(OSSL_PATH_INST ${LIBCURL_PATH_SRC}/builds/openssl-${TARCH} CACHE PATH
+	"OpenSSL install path")
 
-# Build zlib, then libcurl.
+# Build zlib and openssl, then libcurl.
 # Note: this happens at config time as a pre-requisite, for now. This might
 # be changed to a build target later (possibly as a CMake subproject: re-link
 # only if out-of-date, skip building the .exe, allow disabling non-HTTP
@@ -262,7 +270,44 @@ if (NOT IS_DIRECTORY ${LIBCURL_LD_PATH})
 		${ZLIB_PATH_SRC}/*.h)
 	file(INSTALL ${ZLIB_H_FILES} DESTINATION ${ZLIB_PATH_INST}/include)
 
-	# build libcurl second: config first, build afterwards..
+	# build openssl next: configure, build, install
+	message("Building OpenSSL library in ${OSSL_PATH_SRC}")
+	# OpenSSL also builds in source dir: remove potential conflicting
+	# architecture or build mode (release/debug) binaries
+	execute_process(COMMAND
+		nmake clean
+		RESULT_VARIABLE CMD_RETURN
+		WORKING_DIRECTORY "${OSSL_PATH_SRC}"
+		)
+	if (NOT ${CMD_RETURN})
+		execute_process(COMMAND
+			perl Configure ${OSSL_ARCH}
+			--prefix=${OSSL_PATH_INST}
+			--openssldir=${OSSL_PATH_INST}
+			zlib
+			--with-zlib-include=${ZLIB_PATH_INST}/include
+			--with-zlib-lib=${ZLIB_PATH_INST}/lib/zlib.lib
+			${OSSL_BUILD_TYPE}
+			no-shared no-dso no-srtp no-dgram no-engine no-hw-padlock no-tests
+			no-dso no-srtp no-dgram no-engine no-hw-padlock no-tests
+			no-autoload-config no-pinshared
+			RESULT_VARIABLE CMD_RETURN
+			WORKING_DIRECTORY "${OSSL_PATH_SRC}"
+			)
+		if (NOT ${CMD_RETURN})
+			execute_process(COMMAND
+				nmake install_dev
+				RESULT_VARIABLE CMD_RETURN
+				WORKING_DIRECTORY "${OSSL_PATH_SRC}"
+				)
+		endif (NOT ${CMD_RETURN})
+	endif (NOT ${CMD_RETURN})
+	if (${CMD_RETURN})
+		message(FATAL_ERROR "Building OpenSSL failed.")
+	endif (${CMD_RETURN})
+
+
+	# build libcurl: config first, build afterwards..
 	message("Building curl library in ${LIBCURL_PATH_SRC}")
 	execute_process(COMMAND buildconf.bat
 		RESULT_VARIABLE CMD_RETURN
@@ -270,9 +315,10 @@ if (NOT IS_DIRECTORY ${LIBCURL_LD_PATH})
 		)
 	if (NOT ${CMD_RETURN})
 		execute_process(COMMAND
-			nmake /f Makefile.vc mode=static MACHINE=${TARCH}
-			ENABLE_WINSSL=yes ENABLE_IDN=yes ENABLE_IPV6=yes ENABLE_SSPI=yes
+			nmake /f Makefile.vc mode=static MACHINE=${TARCH} RTLIBCFG=static
+			ENABLE_SCHANNEL=yes ENABLE_IDN=yes ENABLE_IPV6=yes ENABLE_SSPI=yes
 			WITH_ZLIB=static ZLIB_PATH=${ZLIB_PATH_INST}
+			WITH_SSL=static SSL_PATH=${OSSL_PATH_INST}
 			# build type needs to be synchronized (to link in the same CRT)
 			DEBUG=${LIBCURL_DEBUG_ENABLED}
 			# This "sneaks in" a define to disable all other protocols than
@@ -297,13 +343,20 @@ if (${WIN32})
 	set_property(TARGET zlib PROPERTY IMPORTED_LOCATION
 		${ZLIB_PATH_INST}/lib/zlib.lib)
 
+	add_library(libcrypto STATIC IMPORTED)
+	set_property(TARGET libcrypto PROPERTY IMPORTED_LOCATION
+		${OSSL_PATH_INST}/lib/libcrypto.lib)
+	add_library(libssl STATIC IMPORTED)
+	set_property(TARGET libssl PROPERTY IMPORTED_LOCATION
+		${OSSL_PATH_INST}/lib/libssl.lib)
+
 	add_library(libcurl STATIC IMPORTED)
 	set_property(TARGET libcurl PROPERTY IMPORTED_LOCATION
 		${LIBCURL_LD_PATH}/libcurl_a${LIBCURL_BUILD_SUFFIX}${CMAKE_STATIC_LIBRARY_SUFFIX})
 	set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} /DCURL_STATICLIB")
-	# Libraries that libcurl/WinSSL links against.
-	# Removed: wldap32 advapi32 gdi32 user32 (unused with current config)
-	set(LIBCURL_WIN_LIBS ws2_32 crypt32 normaliz)
+	# Libraries that libcurl/OpenSSL+WinSSL links against.
+	# Removed: wldap32 gdi32 (unused with current config)
+	set(LIBCURL_WIN_LIBS ws2_32 crypt32 normaliz advapi32 user32)
 else (${WIN32})
 	set_property(TARGET libcurl PROPERTY IMPORTED_LOCATION
 		${LIBCURL_LD_PATH}/libcurl${CMAKE_SHARED_LIBRARY_SUFFIX})
@@ -313,6 +366,10 @@ add_custom_target(curlclean
 	COMMAND nmake /f Makefile.vc mode=static clean
 	COMMAND ../buildconf.bat -clean
 		WORKING_DIRECTORY "${LIBCURL_PATH_SRC}/winbuild"
+	)
+add_custom_target(osslclean
+	COMMAND nmake clean
+		WORKING_DIRECTORY "${OSSL_PATH_SRC}"
 	)
 add_custom_target(zlibclean
 	COMMAND nmake /f win32/Makefile.msc clean
@@ -409,7 +466,7 @@ include_directories(${ODBC_INC} ${DRV_SRC_DIR} ${LIBCURL_INC_PATH}
 	${DSNEDITOR_INC_PATH})
 target_link_libraries(${DRV_NAME} odbccp32 legacy_stdio_definitions
 	${DSNBND_LIB_BIN_DIR_BASE}-$<CONFIG>/esdsnbnd${BARCH}${CMAKE_IMPORT_LIBRARY_SUFFIX}
-	zlib libcurl ${LIBCURL_WIN_LIBS})
+	zlib libcrypto libssl libcurl ${LIBCURL_WIN_LIBS})
 
 
 #
